@@ -1,0 +1,310 @@
+REPORT zbk_egt_0010.
+
+
+TABLES: zakoc_tabdata.
+
+TYPE-POOLS: slis.
+
+TYPES: BEGIN OF ty_tabdata,
+         pers_id    TYPE zakoc_tabdata-pers_id,
+         pers_name  TYPE zakoc_tabdata-pers_name,
+         tab_date   TYPE zakoc_tabdata-tab_date,
+         start_time TYPE zakoc_tabdata-start_time,
+         selkz      TYPE char1,
+       END OF ty_tabdata.
+
+
+DATA: gt_data TYPE STANDARD TABLE OF ty_tabdata,
+      gs_data TYPE ty_tabdata.
+
+DATA: gt_fieldcat TYPE slis_t_fieldcat_alv,
+      gs_fieldcat TYPE slis_fieldcat_alv,
+      gs_layout   TYPE slis_layout_alv.
+
+"----------------------
+" Selection Screen
+"----------------------
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
+
+SELECT-OPTIONS: s_persid FOR zakoc_tabdata-pers_id,
+                s_name   FOR zakoc_tabdata-pers_name,
+                s_date   FOR zakoc_tabdata-tab_date,
+                s_time   FOR zakoc_tabdata-start_time.
+
+SELECTION-SCREEN END OF BLOCK b1.
+
+INITIALIZATION.
+
+START-OF-SELECTION.
+
+  PERFORM get_data.
+  PERFORM build_fieldcat.
+  PERFORM display_alv.
+
+  "----------------------
+  " Form: get_data
+  "----------------------
+FORM get_data.
+
+  DATA: lt_raw  TYPE STANDARD TABLE OF zakoc_tabdata,
+        ls_raw  TYPE zakoc_tabdata,
+        ls_line TYPE ty_tabdata.
+
+  " Verileri seçim kriterlerine göre çek
+  SELECT * FROM zakoc_tabdata
+  INTO TABLE lt_raw
+  WHERE pers_id    IN s_persid
+    AND pers_name  IN s_name
+    AND tab_date   IN s_date
+    AND start_time IN s_time.
+
+  " ALV için uygun tabloya taşı
+  LOOP AT lt_raw INTO ls_raw.
+    CLEAR ls_line.
+    ls_line-pers_id    = ls_raw-pers_id.
+    ls_line-pers_name  = ls_raw-pers_name.
+    ls_line-tab_date   = ls_raw-tab_date.
+    ls_line-start_time = ls_raw-start_time.
+    APPEND ls_line TO gt_data.
+  ENDLOOP.
+
+ENDFORM.
+
+"----------------------
+" Form: build_fieldcat
+"----------------------
+FORM build_fieldcat.
+
+  CLEAR gs_fieldcat.
+  gs_fieldcat-fieldname = 'PERS_ID'.
+  gs_fieldcat-seltext_m = 'Personel ID'.
+  APPEND gs_fieldcat TO gt_fieldcat.
+
+  CLEAR gs_fieldcat.
+  gs_fieldcat-fieldname = 'PERS_NAME'.
+  gs_fieldcat-seltext_m = 'Personel Adı'.
+  APPEND gs_fieldcat TO gt_fieldcat.
+
+  CLEAR gs_fieldcat.
+  gs_fieldcat-fieldname = 'TAB_DATE'.
+  gs_fieldcat-seltext_m = 'Tarih'.
+  APPEND gs_fieldcat TO gt_fieldcat.
+
+  CLEAR gs_fieldcat.
+  gs_fieldcat-fieldname = 'START_TIME'.
+  gs_fieldcat-seltext_m = 'Başlama Saati'.
+  APPEND gs_fieldcat TO gt_fieldcat.
+
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_LAYOUT
+*&---------------------------------------------------------------------*
+FORM build_layout .
+  gs_layout-box_fieldname = 'SELKZ'.
+  gs_layout-zebra = 'X'.
+  gs_layout-colwidth_optimize = 'X'.
+ENDFORM.
+"----------------------
+" Form: display_alv
+"----------------------
+FORM display_alv.
+
+  PERFORM build_layout.
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+      i_callback_program       = sy-repid
+      i_callback_pf_status_set = 'SET_PF_STATUS'  " Menü tuşları
+      i_callback_user_command  = 'USER_COMMAND'   " Kullanıcı aksiyonu
+      is_layout                = gs_layout
+      it_fieldcat              = gt_fieldcat
+    TABLES
+      t_outtab                 = gt_data.
+
+ENDFORM.
+
+FORM set_pf_status USING rt_extab TYPE slis_t_extab.
+  SET PF-STATUS 'Z_EGT_STATUS'.
+ENDFORM.
+
+FORM user_command USING r_ucomm TYPE sy-ucomm
+                        rs_selfield TYPE slis_selfield.
+  CASE r_ucomm.
+    WHEN '&BACK'.
+      LEAVE PROGRAM.
+    WHEN '&SAVE'.
+      DATA: lt_selected TYPE STANDARD TABLE OF zakoc_tabdata,
+            ls_selected TYPE zakoc_tabdata,
+            ls_check    TYPE zakoc_tabdata.
+
+      " Seçilen kayıtları döngü ile kontrol et
+      LOOP AT gt_data INTO gs_data WHERE selkz = 'X'.
+
+        " Aynı personel ve tarih varsa ekleme
+        SELECT SINGLE * FROM zakoc_tabdata_lo INTO ls_check
+          WHERE pers_id = gs_data-pers_id
+            AND tab_date = gs_data-tab_date.
+
+        IF sy-subrc <> 0.
+          CLEAR ls_selected.
+          ls_selected-pers_id    = gs_data-pers_id.
+          ls_selected-pers_name  = gs_data-pers_name.
+          ls_selected-tab_date   = gs_data-tab_date.
+          ls_selected-start_time = gs_data-start_time.
+          APPEND ls_selected TO lt_selected.
+        ENDIF.
+      ENDLOOP.
+
+      " Ekleme yapılacak kayıt varsa yedek tabloya aktar
+      IF lt_selected IS INITIAL.
+        MESSAGE 'Seçilen kayıtlar zaten yedek tabloda mevcut.' TYPE 'I'.
+      ELSE.
+        INSERT zakoc_tabdata_lo FROM TABLE lt_selected
+          ACCEPTING DUPLICATE KEYS.
+
+        IF sy-subrc = 0.
+          COMMIT WORK.
+          MESSAGE 'Yeni kayıtlar başarıyla yedek tabloya eklendi.' TYPE 'S'.
+        ELSE.
+          MESSAGE 'Kayıt sırasında hata oluştu.' TYPE 'E'.
+        ENDIF.
+      ENDIF.
+
+    WHEN '&TRANSFER'.
+      DATA: lv_fullpath       TYPE string,
+            lv_path           TYPE string,
+            lv_user_action    TYPE i,
+            lv_tab_date_str   TYPE string,
+            lv_start_time_str TYPE string,
+            lv_line           TYPE string,
+            lt_output         TYPE STANDARD TABLE OF string.
+
+      " ALV'de seçilen kayıtları topla
+      LOOP AT gt_data INTO gs_data WHERE selkz = 'X'.
+        APPEND gs_data TO lt_selected.
+      ENDLOOP.
+
+      IF lt_selected IS INITIAL.
+        MESSAGE 'Aktarılacak veri seçilmedi!' TYPE 'E'.
+        RETURN.
+      ENDIF.
+
+
+      DATA: lv_filename    TYPE string.
+
+
+      CALL METHOD cl_gui_frontend_services=>file_save_dialog
+        EXPORTING
+          window_title      = 'Dosya Kaydet'
+          default_extension = 'txt'
+          default_file_name = 'Transfer'
+          file_filter       = 'Text Files (*.txt)|*.txt|All Files (*.*)|*.*'
+        CHANGING
+          fullpath          = lv_fullpath
+          filename          = lv_filename
+          path              = lv_path
+          user_action       = lv_user_action.
+
+      IF lv_user_action <> cl_gui_frontend_services=>action_ok.
+        MESSAGE 'Dosya seçimi iptal edildi.' TYPE 'I'.
+        RETURN.
+      ENDIF.
+
+      " Her satırı formatla ve string tablosuna ekle
+      LOOP AT lt_selected INTO gs_data.
+        lv_tab_date_str = |{ gs_data-tab_date+6(2) }.{ gs_data-tab_date+4(2) }.{ gs_data-tab_date+0(4) }|.
+        lv_start_time_str = |{ gs_data-start_time+0(2) }:{ gs_data-start_time+2(2) }:{ gs_data-start_time+4(2) }|.
+        lv_line = |{ gs_data-pers_id };{ gs_data-pers_name };{ lv_tab_date_str };{ lv_start_time_str }|.
+        APPEND lv_line TO lt_output.
+      ENDLOOP.
+
+      " Dosyayı masaüstüne yaz
+      CALL METHOD cl_gui_frontend_services=>gui_download
+        EXPORTING
+          filename                = lv_fullpath
+          filetype                = 'ASC'
+        CHANGING
+          data_tab                = lt_output
+        EXCEPTIONS
+          file_write_error        = 1
+          no_batch                = 2
+          gui_refuse_filetransfer = 3
+          OTHERS                  = 4.
+
+      IF sy-subrc = 0.
+        MESSAGE |Veriler başarıyla aktarıldı: { lv_fullpath }| TYPE 'S'.
+      ELSE.
+        MESSAGE 'Dosya aktarımı sırasında hata oluştu.' TYPE 'E'.
+      ENDIF.
+
+
+    WHEN '&TRANSXL'.
+      CLEAR: lt_selected[], gs_data.
+
+      " Dosya seçim ekranı için kullanılacak değişkenleri tanımla
+      DATA: lv_action          TYPE i,                    "Kullanıcının dosya seçim ekranındaki eylemi (kaydet veya iptal).
+            lv_fullpath_legacy TYPE rlgrap-filename.      "Eski sistemlerle uyumluluk için kullanılan tam yol.
+
+      " ALV'de seçilen verileri al
+      LOOP AT gt_data INTO gs_data WHERE selkz = 'X'.
+        APPEND gs_data TO lt_selected.
+      ENDLOOP.
+
+      " Eğer hiç seçim yapılmadıysa kullanıcıyı uyar
+      IF lt_selected IS INITIAL.
+        MESSAGE 'Lütfen aktarım için en az bir kayıt seçin.' TYPE 'W'.
+        RETURN.
+      ENDIF.
+
+      " Dosya adı ve kaydedilecek yolu kullanıcıdan al
+      CALL METHOD cl_gui_frontend_services=>file_save_dialog
+        EXPORTING
+          window_title      = 'Veriyi Kaydet'
+          default_extension = 'txt'
+          default_file_name = 'Transfer_Data.txt'
+        CHANGING
+          filename          = lv_filename
+          path              = lv_path
+          fullpath          = lv_fullpath
+          user_action       = lv_action.
+
+      " Kullanıcı iptal ettiyse çık
+      IF lv_action NE cl_gui_frontend_services=>action_ok.
+        RETURN.
+      ENDIF.
+
+      " Dosyaya yazılacak içerik için geçici tablo ve satır tanımla
+      DATA: lt_text_lines TYPE STANDARD TABLE OF string.
+
+
+      " Seçilen verileri satır satır string olarak oluştur
+      LOOP AT lt_selected INTO gs_data.
+        CONCATENATE gs_data-pers_id
+                    gs_data-pers_name
+                    gs_data-tab_date
+                    gs_data-start_time
+               INTO lv_line SEPARATED BY ';'. " CSV tarzı
+        APPEND lv_line TO lt_text_lines.
+      ENDLOOP.
+
+      " Oluşturulan satırları dosyaya yaz
+      CALL METHOD cl_gui_frontend_services=>gui_download
+        EXPORTING
+          filename = lv_fullpath           " Dosyanın tam yolu
+          filetype = 'ASC'                 " Dosya türü (ASCII metin dosyası)
+        CHANGING
+          data_tab = lt_text_lines         " Yazılacak veriler
+        EXCEPTIONS
+          OTHERS   = 1.
+
+      IF sy-subrc = 0.
+        MESSAGE 'Veriler başarıyla masaüstüne aktarıldı.' TYPE 'S'.
+      ELSE.
+        MESSAGE 'Aktarım sırasında hata oluştu.' TYPE 'E'.
+      ENDIF.
+
+  ENDCASE.
+ENDFORM.
+
+
